@@ -73,7 +73,7 @@ def handler(webhandler, msgid):
     hasreply, hasidle = [False], [False] # hack to allow closing over these variables
     def f(msg):
         msgs.append(msg)
-        if msg.get('msg_type', '') in ['execute_reply', 'inspect_reply']:
+        if msg.get('msg_type', '') in ['execute_reply', 'inspect_reply', 'complete_reply']:
             hasreply[0] = True
         elif (msg.get('msg_type', '') == 'status' and
             msg['content']['execution_state'] == 'idle'):
@@ -82,7 +82,7 @@ def handler(webhandler, msgid):
             remove_handler(msgid)
             webhandler.set_header("Content-Type", "application/json")
             def accept(msg):
-                return not msg['msg_type'] in ['status', 'execute_input']
+                return not msg['msg_type'] in ['status', 'execute_input', 'complete_input']
             webhandler.write(json.dumps([m for m in msgs if accept(m)],
                                         default=str))
             webhandler.finish()
@@ -110,6 +110,18 @@ class InspectHandler(tornado.web.RequestHandler):
                             detail_level=req.get('detail', 0))
             install_handler(msgid, handler(self, msgid))
 
+class CompleteHandler(tornado.web.RequestHandler):
+    @tornado.web.asynchronous
+    def post(self, name):
+        msgs = []
+        req = json.loads(self.request.body.decode("utf-8"))
+        code = req['code']
+        cursor_pos = req['cursor_pos']
+        c = get_client(name)
+        with install_handler_lock:
+            msgid = c.complete(code, cursor_pos)
+            install_handler(msgid, handler(self, msgid))
+
 class DebugHandler(tornado.web.RequestHandler):
     def get(self):
         self.write(json.dumps(clients, default=str))
@@ -119,6 +131,7 @@ def make_app():
     return tornado.web.Application([
         tornado.web.url(r"/execute/(\w+)", ExecuteHandler),
         tornado.web.url(r"/inspect/(\w+)", InspectHandler),
+        tornado.web.url(r"/complete/(\w+)", CompleteHandler),
         tornado.web.url(r"/debug", DebugHandler),
         ])
 
