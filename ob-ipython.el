@@ -62,6 +62,11 @@
   "Path to the driver script."
   :group 'ob-ipython)
 
+(defcustom ob-ipython-command
+  "jupyter"
+  "Command to launch ipython. Usually ipython or jupyter."
+  :group 'ob-ipython)
+
 ;;; utils
 
 (defun ob-ipython--write-string-to-file (file string)
@@ -129,7 +134,7 @@
 ;;; process management
 
 (defun ob-ipython--kernel-repl-cmd (name)
-  (list "ipython" "console" "--existing" (format "emacs-%s.json" name)))
+  (list ob-ipython-command "console" "--existing" (format "emacs-%s.json" name)))
 
 (defun ob-ipython--create-process (name cmd)
   (apply 'start-process name (format "*ob-ipython-%s*" name) (car cmd) (cdr cmd)))
@@ -153,8 +158,9 @@
 (defun ob-ipython--launch-driver (name &rest args)
   (let* ((python (locate-file (if (eq system-type 'windows-nt)
                                   "python.exe"
-                                (or python-shell-interpreter "python")) exec-path))
-         (pargs (append (list python ob-ipython-driver-path) args)))
+                                (or python-shell-interpreter "python"))
+                              exec-path))
+         (pargs (append (list python "--" ob-ipython-driver-path) args)))
     (ob-ipython--create-process name pargs)
     ;; give kernel time to initialize and write connection file
     (sleep-for 1)))
@@ -162,7 +168,7 @@
 (defun ob-ipython--create-client-driver ()
   (when (not (ignore-errors (process-live-p (ob-ipython--get-driver-process))))
     (ob-ipython--launch-driver "client-driver" "--port"
-			       (number-to-string ob-ipython-driver-port))
+                               (number-to-string ob-ipython-driver-port))
     ;; give driver a chance to bind to a port and start serving
     ;; requests. so horrible; so effective.
     (sleep-for 1)))
@@ -171,8 +177,13 @@
   (get-process "client-driver"))
 
 (defun ob-ipython--create-repl (name)
-  (run-python (s-join " " (ob-ipython--kernel-repl-cmd name)) nil nil)
-  (format "*%s*" python-shell-buffer-name))
+  ;; TODO: hack while we wait on
+  ;; https://github.com/jupyter/jupyter_console/issues/93
+  (let ((prev (getenv "JUPYTER_CONSOLE_TEST")))
+    (setenv "JUPYTER_CONSOLE_TEST" "1")
+    (run-python (s-join " " (ob-ipython--kernel-repl-cmd name)) nil nil)
+    (setenv "JUPYTER_CONSOLE_TEST" prev)
+    (format "*%s*" python-shell-buffer-name)))
 
 ;;; kernel management
 
@@ -269,8 +280,8 @@ a new kernel will be started."
     (with-current-buffer (url-retrieve-synchronously
                           ;; TODO: hardcoded the default session here
                           (format "http://%s:%d/inspect/default"
-                            ob-ipython-driver-hostname
-                            ob-ipython-driver-port))
+                                  ob-ipython-driver-hostname
+                                  ob-ipython-driver-port))
       (if (>= (url-http-parse-response) 400)
           (ob-ipython--dump-error (buffer-string))
         (goto-char url-http-end-of-headers)
@@ -290,8 +301,8 @@ a new kernel will be started."
   "Ask a kernel for documentation on the thing at POS in BUFFER."
   (interactive (list (current-buffer) (point)))
   (-if-let (result (->> (ob-ipython--inspect buffer pos) (assoc 'text/plain) cdr))
-    (ob-ipython--create-inspect-buffer result)
-  (message "No documentation was found.")))
+      (ob-ipython--create-inspect-buffer result)
+    (message "No documentation was found.")))
 
 ;;; babel framework
 
@@ -326,7 +337,13 @@ This function is called by `org-babel-execute-src-block'."
                 ((and file (string= (f-ext file) "svg"))
                  (->> result (assoc 'image/svg+xml) cdr (ob-ipython--write-string-to-file file)))
                 (file (error "%s is currently an unsupported file extension." (f-ext file)))
-                (t (->> result (assoc 'text/plain) cdr))))))))
+                (t (->> result reverse (assoc 'text/plain) cdr ob-ipython--table-or-string))))))))
+
+(defun ob-ipython--table-or-string (results)
+  "Extract an Org table from RESULTS if it looks like it might be
+a table."
+  (when results
+    (org-babel-python-table-or-string results)))
 
 (defun org-babel-prep-session:ipython (session params)
   "Prepare SESSION according to the header arguments in PARAMS.
